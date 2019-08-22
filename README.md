@@ -15,4 +15,4 @@ The code can right now ---
 ## Dependencies: xlsxwriter, Python >=3.6 (tested), beautifulsoup4, googleapiclient, oauthlib2, httplib2 
 
 
-Please contact if you have any issues. The code is written for Fall semester, 2019 of ECEN-4350 to automate the scheduling and timeline creation process. 
+Please contact if you have any issues. The code is written for ECEN-4350-f19 to automate the scheduling and timeline creation process. 
