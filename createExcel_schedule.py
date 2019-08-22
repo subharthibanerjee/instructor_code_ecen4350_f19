@@ -1,32 +1,45 @@
 """
 	__author__="Subharthi"
 	__date__=""
-	__version__="v1.0"
+	__version__="v1.0.4"
 
 	creates an excel file where it creates entries for
 	class dates 
 
-	Requirements: install beautifulsoup
+	Requirements: install beautifulsoup, xlsxwriter
 """
+from __future__ import print_function
 import logging
 import xlsxwriter 
   
 
 from sys import platform
-import os
-from datetime import date, timedelta 
+import os, os.path
+from datetime import date, timedelta
+
+from datetime import datetime
+
 from collections import namedtuple
 
-import threading
+
 import time
 import urllib.request 
+
 from bs4 import BeautifulSoup
 
 import re
 
+
+import datetime
+import pickle
+
+from googleapiclient.discovery import build
+from google_auth_oauthlib.flow import InstalledAppFlow
+from google.auth.transport.requests import Request
+
 __author__="Subharthi"
-__date__=""
-__version__="v1.0"
+__date__="08/17/2018"
+__version__="v1.0.3"
 
 
 # ===================================================================
@@ -42,22 +55,29 @@ xl_filename = "ecen4350f19_sched.xlsx"
 n_topics=7
 task_cols = ["Task "+str(i) for i in range(1, n_topics+1)]
 
-labs_hw = ['Lab Assignment Posted', 'Lab Assignment Due', 
+labs_hw = ['Lab Today', 'Lab Assignment Posted', 'Lab Assignment Due', 
 			'HW Assignment Posted', 'HW Assignment Due',
 			'Special Notice']
 date_header = "Class Dates"
-isQuizToday = "Quiz Today"
-isExamToday = "Exam Today"
+
+task_cols.insert(0, "Lecture No.")
 task_cols.insert(0,date_header)
+
 for data in labs_hw:
 	task_cols.append(data)
 task_cols_n = [i for i in range(0, len(task_cols))]
 task_cols_dict = dict(zip(task_cols, task_cols_n))
 
-# ====================== important dates ============================
+# ====================== calendar dates ============================
+
+# this is for calendar events to work with google calendar ---
+calender_events = None
+SCOPES = 'https://www.googleapis.com/auth/calendar'
 
 
+allEventsForCalendar = []
 
+all_generated_files = []
 # ===================================================================
 
 
@@ -69,18 +89,20 @@ if_quiz = False
 if_meeting = False
 if_holiday = False
 if_exam=False
-n_labs=5
-n_hws = 3
-lab_numbers = ["Lab Assignment - "+str(i) for i in range(1, n_labs+1)]
-lab_description=["Implement Serial", "SPI Lab", "I2C lab",
-				"Schematic Design", "PCB design"]
 
-hw_description=["Initial Block Diagram", "Final Block Diagram", 
+
+
+lab_description=["Implement Serial", "First Meeting","SPI Lab", "I2C lab",
+				"Schematic Design", "PCB design"]
+n_labs=len(lab_description)
+lab_numbers = ["Lab Assignment - "+str(i) for i in range(1, n_labs+1)]
+hw_description=["Initial Block Diagram", "First Meeting", "Final Block Diagram", 
 				"Component Selection"]
+n_hws = len(hw_description)
 
 hw_numbers = ["HW Assignment - "+str(i) for i in range(1, n_labs+1)]
 
-pcb_description = "PCB Submission for Manufacturing"
+
 lab_dict=dict(zip(lab_numbers, lab_description))
 hw_dict=dict(zip(hw_numbers, hw_description))
 
@@ -99,17 +121,24 @@ lab_due_dates=[i+1 for i in range(1, n_labs+1)]
 hw_post_dates=[i for i in range(1, n_hws+1)]
 hw_due_dates=[i+1 for i in range(1, n_hws+1)]
 
-pcb_due = 8
+
+
+
+pcb_due = 9
 
 project_demo_due=15
-project_report_due=15
+project_report_due=16
+
+exam_1 = 4
+exam_2 = 8
+final_exam = 16
 
 # ===================================================================
 year=2019
 fall_month=8
 fall_day=26
 
-fall_end_day=6
+fall_end_day=12
 fall_end_month=12
 
 MONTHS_TO_CHECK = [i for i in range(fall_month+1, fall_end_month+1)]
@@ -126,11 +155,25 @@ unl_site = "https://registrar.unl.edu/academic-calendar/archive/2019-2020/"
 
 unmc_site = "http://catalog.unmc.edu/general-information/academic-calendar2/"
 
+test_site = "https://bgcmalibu.org/vc_block/club-holiday-schedule/"
+
 temp_file = "test_soup.txt"
 uno_temp_file = "uno_test_soup.txt"
 unl_temp_file = "unl_test_soup.txt"
 unmc_temp_file = "unmc_test_soup.txt"
+test_temp_file = 'test_test_soup.txt'
 
+
+event_file_name = "eventIds.txt"
+
+all_generated_files.append(temp_file)
+all_generated_files.append(uno_temp_file)
+all_generated_files.append(unl_temp_file)
+all_generated_files.append(unmc_temp_file)
+all_generated_files.append(test_temp_file)
+all_generated_files.append(xl_filename)
+all_generated_files.append('token.pickle')
+all_generated_files.append(xl_filename)
 
 # TODO: check for unmc site, there is a nonetype
 
@@ -150,14 +193,22 @@ def findHolidays(site, tmp_file):
 				content = f.read()
 			return content
 	else:
-		logging.info("File does not exist, opening from internet %s", uno_site)
+		logging.info("File does not exist, opening from internet %s", site)
+		if platform=='darwin':
+			logging.info('Unsecure ssl verification off http request')
+			import ssl
+			if (not os.environ.get('PYTHONHTTPSVERIFY', '') and getattr(ssl, '_create_unverified_context', None)): 
+				ssl._create_default_https_context = ssl._create_unverified_context
+		
 		url = urllib.request.urlopen(site)
 
 		content = url.read()
-		
-		with open(tmp_file, "wb") as f:
-			f.write(content)
-		logging.info("[IN findHolidays] File write completed, %s created ", tmp_file)
+		if len(content) is 0:
+			logging.info("File creation failed due to length of content scraped is %d", len(content))
+		else:
+			with open(tmp_file, "wb") as f:
+				f.write(content)
+			logging.info("[IN findHolidays] File write completed, %s created ", tmp_file)
 		return content
 
 
@@ -181,10 +232,12 @@ def appendTextHolidays(reason, tmp_file):
 
 	else:
 		logging.info('File %s created and writing', filename)
-
-		with open(filename, 'w', encoding="utf8") as f:
-			f.write('\n'.join(reason))
-		logging.info('File %s created and written', filename)
+		if len(reason) is 0:
+			logging.info("[FILE] %s is not created, not sufficient length", filename)
+		else:
+			with open(filename, 'w', encoding="utf8") as f:
+				f.write('\n'.join(reason))
+			logging.info('File %s created and written', filename)
 	return filename
 
 
@@ -208,6 +261,11 @@ def checkHolidays(site, tmp_file):
 	for tag in soup.find_all(text=re.compile('Holiday')):
 		if site is unmc_site:
 			col = tag.findParent('tbody')
+		if site is test_site:
+			col = tag.findParent('ul')
+
+		if site is uno_site:
+			col = tag.findParent('tr')
 		else:
 			col = tag.findParent('tr')
 		#print("tag: ",col)
@@ -234,7 +292,9 @@ def checkHolidays(site, tmp_file):
 					#print(holiday)
 					holidays.extend(holiday)
 
-	print(appendTextHolidays(holidays_with_reason, tmp_file))
+	fname = appendTextHolidays(holidays_with_reason, tmp_file)
+	all_generated_files.append(fname)
+	print("file name created with holidays ",fname)
 
 	#print("reason: ", holidays_with_reason)
 	return list(set(holidays)) # use hashset for no duplicates
@@ -354,8 +414,8 @@ def listAllSemesterdays(sem_start, sem_end):
 	days_in_semester = sem_end_date - sem_start_date
 	print("there are ", days_in_semester.days, " days in this semester")
 	for i in range(1, days_in_semester.days + 1, 7):
-		tuesday = sem_start_date + timedelta(days=i+1)
-		thursday = sem_start_date + timedelta(days=i+3)
+		tuesday = sem_start_date + timedelta(days=i)
+		thursday = sem_start_date + timedelta(days=i+2)
 		tu_dict[tuesday]="Tue"
 		th_dict[thursday]="Thurs"
 		allTuesdays.append(tuesday)
@@ -378,8 +438,10 @@ def printDateTime(datetime_obj):
 		if not isinstance(dt, date):
 			for d in dt:
 				print(d, end=", ")
+                               
 		else:
 			print(dt, end=", ")
+                       
 
 		print()
 
@@ -395,7 +457,74 @@ def createFormatExcel(formatting):
 	return format_dict
 	
 
-def createExcel(header, writeables, filename, holidays):
+
+
+
+def createListofEvents(summary, description, week_days):
+	"""
+	"""
+
+	startTime = {
+	'dateTime':datetime.datetime.now().isoformat(), 
+	'timeZone':'America/Chicago'
+	}
+	endTime = {
+		'dateTime':datetime.datetime.now().isoformat(), 
+		'timeZone':'America/Chicago'
+	}
+
+	attendee = {'email':None}
+
+	reminder= {
+		'useDefault':True,
+		'overrides':[]	
+	} 
+
+
+	room_location = 'PKI-256'
+
+	default_event = {
+		'summary': None, 
+		'location':room_location,
+		'description': None, 
+		'start':startTime, 
+		'end':endTime, 
+		'recurrence':[],
+		'attendees':[],
+		'reminders': reminder,
+	}
+
+	
+	default_event['summary'] = summary
+	default_event['description'] = description
+	if len(week_days) < 1:
+		pass
+	elif len(week_days) < 2:
+		week_days[0]=datetime.datetime.combine(week_days[0], datetime.datetime.min.time())
+		
+
+		startTime['dateTime'] = week_days[0].isoformat()
+
+		endTime['dateTime'] = week_days[0].isoformat()
+		
+
+	else:
+		week_days[0]=datetime.datetime.combine(week_days[0], datetime.datetime.min.time())
+		week_days[1]=datetime.datetime.combine(week_days[1], datetime.datetime.min.time())
+		startTime['dateTime'] = week_days[0].isoformat()
+
+		endTime['dateTime'] = week_days[1].isoformat()
+
+	
+	default_event['start'] = startTime
+	default_event['end'] = endTime
+
+	print(default_event)
+	
+	return default_event
+
+
+def createExcel(header, writeables, filename, holidays, ifevent=True):
 	"""
 	rtype:
 	"""
@@ -410,10 +539,7 @@ def createExcel(header, writeables, filename, holidays):
 	format_dict=createFormatExcel(format_cell)
 	cell_format = workbook.add_format(format_dict)
 	worksheet.set_row(0, 70)
-	#bold = workbook.add_format({'bold': True})
-	#bg_blue = workbook.add_format({'bg_color': 'blue'})
-	#bg_red = workbook.add_format({'bg_color': 'red'})
-	#bg_yellow_bold = workbook.add_format({'bold':True,'bg_color': 'yellow'})
+	
 	for head in header:
 		
 		worksheet.write(row, col, head,  cell_format)
@@ -423,8 +549,16 @@ def createExcel(header, writeables, filename, holidays):
 	count = 2
 	week = 0
 	
+	# TODO Please rewrite this section to make the code more interpretable
+
+	# each week startdate and end date with event gets added 
+	# to calendat if ifEvent is True
+	week_days = []
+	list_of_events= []
 	for ele in writeables:
-		
+
+		week_days.append(ele)
+
 		if count == 2:
 			
 			week = week + 1
@@ -435,27 +569,130 @@ def createExcel(header, writeables, filename, holidays):
 				'black', '8', True]
 			format_dict=createFormatExcel(format_cell)
 			cell_format = workbook.add_format(format_dict)
+
+
+			# @TODO: make a function for posting hw
 			if week in hw_post_dates:
+
 				text = hw_numbers[week-1]+'('+ hw_dict[hw_numbers[week-1]]+')'
 				
 				worksheet.write(row, task_cols_dict['HW Assignment Posted'],
 								 text, cell_format)
+				
+				# if event make a disctionary to post in calendar
+				if ifevent:
+					list_of_events.append(createListofEvents(hw_numbers[week - 1], text, [ele, ele+timedelta(7)]))
+					
+
+
 			if week in lab_post_dates:
 				text = lab_numbers[week-1]+'('+lab_dict[lab_numbers[week-1]] +')'
 				worksheet.write(row, task_cols_dict['Lab Assignment Posted'],
 								 text, cell_format)
+				if ifevent:
+					list_of_events.append(createListofEvents(lab_numbers[week - 1], text, [ele, ele+timedelta(7)]))
+
+
 			if week in lab_due_dates:
 				text = lab_numbers[week-2]+'('+ lab_dict[lab_numbers[week-2]]+')'
 								 
 				worksheet.write(row, task_cols_dict['Lab Assignment Due'],
 								 text
 								 , cell_format)
+				#if ifevent:
+				#	list_of_events.append(createListofEvents(defaultEvent, 
+				#		lab_numbers[week - 2], text, week_days))
+
+
 			if week in hw_due_dates:
 				text =  hw_numbers[week-2]+'('+hw_dict[hw_numbers[week-2]]+')'
 				worksheet.write(row, task_cols_dict['HW Assignment Due'],
 								text, cell_format)
 
+				#if ifevent:
+				#	list_of_events.append(createListofEvents(defaultEvent, 
+				#		hw_numbers[week - 2], text, week_days))
+
+
+			if week == project_demo_due:
+				worksheet.write(row, task_cols_dict['Special Notice'],
+								'Project Demo Due', cell_format)
+
+				if ifevent:
+					list_of_events.append(createListofEvents('Project Demo Due', 'Project Demo Due', [ele, ele+timedelta(7)]))
+
+			if week == project_report_due:
+				worksheet.write(row, task_cols_dict['Special Notice'],
+								'Project Report Due', cell_format)
+				if ifevent:
+					list_of_events.append(createListofEvents('Project Report Due', 'Project Report Due', [ele, ele+timedelta(7)]))
+
+			if week == pcb_due:
+				worksheet.write(row, task_cols_dict['Special Notice'],
+								'PCB Submission to Manufacturing Due', cell_format)
+
+				if ifevent:
+					list_of_events.append(createListofEvents('PCB Submission to Manufacturing Due', 'PCB Submission to Manufacturing Due', [ele, ele+timedelta(7)]))
+
+
+
+			# @TODO: make a function for posting exam 
+			if week == exam_1:
 			
+				for c in range(len(header[:task_cols_dict['Lab Today']])):
+					format_cell = [True, 'green', 
+									'black', '8', True]
+					format_dict=createFormatExcel(format_cell)
+					cell_format = workbook.add_format(format_dict)
+
+					worksheet.write(row, c,
+								'Exam 1', cell_format)
+				worksheet.write(row, task_cols_dict['Special Notice'],
+								'Exam 1 today', cell_format)
+
+				if ifevent:
+					list_of_events.append(createListofEvents('Exam 1', 'First Exam', [ele]))
+
+
+
+
+			if week == exam_2:
+				for c in range(len(header[:task_cols_dict['Lab Today']])):
+					format_cell = [True, 'green', 
+									'black', '8', True]
+					format_dict=createFormatExcel(format_cell)
+					cell_format = workbook.add_format(format_dict)
+
+					worksheet.write(row, c,
+								'Exam 2', cell_format)
+				worksheet.write(row, task_cols_dict['Special Notice'],
+								'Exam 2 today', cell_format)
+
+
+				if ifevent:
+					list_of_events.append(createListofEvents('Exam 2', 'Second Exam', [ele]))
+
+
+
+			if week == final_exam:
+				# if there is an exam please make all the cells green
+				for c in range(len(header[:task_cols_dict['Lab Today']])):
+					format_cell = [True, 'green', 
+									'black', '8', True]
+					format_dict=createFormatExcel(format_cell)
+					cell_format = workbook.add_format(format_dict)
+
+					worksheet.write(row, c,
+								'Final Exam', cell_format)
+				worksheet.write(row, task_cols_dict['Special Notice'],
+								'Final Exam Today', cell_format)
+
+
+
+				if ifevent:
+					list_of_events.append(createListofEvents('Final Exam', 'Final Exam', [ele]))
+	
+				
 			logging.info("Writing %s", Week)
 			format_cell = [True, 'yellow', 
 				'black', '10', True]
@@ -464,10 +701,11 @@ def createExcel(header, writeables, filename, holidays):
 			worksheet.write(row, col, Week, cell_format)
 			row = row + 1
 			count = 0
-
+			week_days = []
 		#worksheet.write(row, col, column)
 		if ele in holidays:
 			# if holidays make column red
+			
 			format_cell = [True, 'red', 
 				'black', '10', True]
 			format_dict=createFormatExcel(format_cell)
@@ -480,16 +718,22 @@ def createExcel(header, writeables, filename, holidays):
 			row = row + 1
 			count = count + 1
 			
+			
 		else:
+			
 			ele = ele.strftime("%m/%d/%Y")
 			worksheet.write(row, col, ele)
 			logging.info("writing %s ", ele)
 			row = row + 1
 			count = count + 1
+			
 
 
 	logging.info("finished creating workbook")
 	workbook.close()
+	
+	#print("allEventsForCalendar ", allEventsForCalendar)
+	return list_of_events
 
 
 
@@ -499,7 +743,139 @@ def createAssignment(posted_dates, due_in, lab_assignment):
 	"""
 	pass
 
-if __name__=="__main__":
+
+
+
+
+
+def createEventGoogleCalendar(eventList, eventfile):
+	""" Create events from the stored events due to the creation
+	of Excel sheet
+	rtype:
+	"""
+
+	creds = None	
+
+	if os.path.exists('token.pickle'):
+		with open('token.pickle', 'rb') as token:
+			creds = pickle.load(token)
+
+	if not creds or not creds.valid:
+		if creds and creds.expired and creds.refresh_token:
+			creds.refresh(Request())
+		else:
+			flow = InstalledAppFlow.from_client_secrets_file(
+				'credentials.json', SCOPES)
+			
+			creds = flow.run_local_server(port=0)
+
+			# save the credentials for next run
+		with open('token.pickle', 'wb') as token:
+			pickle.dump(creds, token)
+			
+	print("service creds: ", creds)
+	service = build('calendar', 'v3', credentials=creds, cache_discovery=False)
+
+	# call the calendar API
+
+	#now = datetime.datetime.utcnow().isoformat()+'Z' # Z indicates UTC time
+	#print(now)
+	logging.info('Print Events in the calendar ')
+
+	#count = 0
+	eventId = []
+	for event in eventList:
+
+		
+		#eventId = 'event' + str(count)
+		
+		logging.info('for loop ')
+		event = service.events().insert(calendarId='primary', body=event).execute()
+		eventId.append(event['id'])
+		print('event id:', eventId)
+		logging.info('Event created: %s', (event.get('htmlLink')))
+		#count = count + 1
+
+
+	if os.path.isfile(eventfile):
+		logging.info("Event id file exists.")
+		os.remove(eventfile)
+		logging.info("removing previous id files")
+	else:
+		with open(eventfile, "wb") as f:
+			# use when np picle available
+			#f.writelines("%s\n", eventid for eventid in eventId)
+			pickle.dump(eventId, f)
+
+
+
+
+
+
+
+def cleanUp(eventfilename):
+	"""
+	"""
+
+
+	for filename in all_generated_files:
+		
+		if os.path.isfile(filename):
+			logging.info("file %s exists, removing", filename)
+			os.remove(filename)
+			print("removed file {}".format(filename))
+
+	logging.info("Removing all previously generated calendar events")
+
+	creds = None	
+
+	if os.path.exists('token.pickle'):
+		with open('token.pickle', 'rb') as token:
+			creds = pickle.load(token)
+
+	if not creds or not creds.valid:
+		if creds and creds.expired and creds.refresh_token:
+			creds.refresh(Request())
+		else:
+			flow = InstalledAppFlow.from_client_secrets_file(
+				'credentials.json', SCOPES)
+			
+			creds = flow.run_local_server(port=0)
+
+			# save the credentials for next run
+		with open('token.pickle', 'wb') as token:
+			pickle.dump(creds, token)
+			
+	print("service creds: ", creds)
+	service = build('calendar', 'v3', credentials=creds, cache_discovery=False)
+	
+
+	#response = service.events().get(calendarId='primary', eventId='eventId').execute()
+
+	logging.info('Delete all the events previously created')
+
+	if os.path.isfile(eventfilename):
+		logging.info('File %s exists', eventfilename)
+		with open(eventfilename, 'rb') as f:
+			eventId = pickle.load(f)
+		os.remove(eventfilename)
+		logging.info('Removed file %s', eventfilename)
+		for ids in eventId:
+			service.events().delete(calendarId='primary', eventId=ids).execute()
+		logging.info('Calendar events successfully deleted')
+	else:
+		print('Filename {} does not exist'.format(eventfilename))
+	
+		
+
+	
+
+
+
+
+
+## main file ----------------
+def main():
 	"""
 	main file in action
 	"""
@@ -522,9 +898,24 @@ if __name__=="__main__":
 
 	logging.info("[MAIN] Starting in the main.")
 
+
+	# clearning option
+
+	answer = input("Do you want to clean and fresh start? Yes: y/Y No:n/N?  ")
+	
+
+	if answer in ['y', 'Y']:
+		logging.info('Cleanig all calendar data and files generated in previous runs')
+		print('Starting fresh.\n\n')
+		cleanUp(event_file_name)
+	elif answer in ['n', 'N']:
+		logging.info('Normal start')
+
+
+
 	#print("Fall semester months: ", MONTHS_TO_CHECK_NAME)
 
-	answer = input("Which schedule you want to follow? Press 1: UNO, 2: UNL, 3: UNMC     ")
+	answer = input("Which schedule you want to follow? Press 1: UNO, 2: UNL, 3: UNMC, 4: Test     ")
 	answer=int(answer)
 
 	if answer == 1:
@@ -538,6 +929,10 @@ if __name__=="__main__":
 	elif answer == 3:
 		site = unmc_site
 		tmp_file = unmc_temp_file
+		logging.info("[MAIN] UNMC schedule chosen")
+	elif answer == 4:
+		site = test_site
+		tmp_file = test_temp_file
 		logging.info("[MAIN] UNMC schedule chosen")
 	else:
 		logging.info("Not a valid option")
@@ -563,8 +958,13 @@ if __name__=="__main__":
 
 		logging.info("[MAIN] working on extracting %s datetimes from string literals", semester)
 
+	elif answer==2:
+		pass
+	else:
+		print('Invalid info')
+
 	holidays = checkHolidays(site, tmp_file)
-	
+	print("holidays: ", holidays)
 	holidays = extractDateTimes(holidays, year, True)
 	#print("Holidays this semester:", holidays)
 	#print(date_header)
@@ -572,6 +972,24 @@ if __name__=="__main__":
 	#print("Holidays this semester regex: ")
 	#printDateTime(extractDateTimes(holidays, year))
 
+	answer = input("Please select: 1. Excel, 2. calendar+excel  ")
+	answer=int(answer)
 	
-	createExcel(task_cols, all_sem_dates, xl_filename, holidays)
-	
+	if answer == 1:
+		logging.info("Just excel sheet is created .")
+		createExcel(task_cols, all_sem_dates, xl_filename, holidays, False)
+	elif answer == 2:
+		logging.info("Both events in calendar and excel sheet are created .")
+		#print(all_sem_dates)
+		allEventsForCalendar = createExcel(task_cols, all_sem_dates, xl_filename, holidays, True)
+		#print("allEventsForCalendar: ", allEventsForCalendar)
+		createEventGoogleCalendar(allEventsForCalendar, event_file_name)
+
+			
+
+	else:
+		print("Invalid option")
+
+if __name__=="__main__":
+
+	main()
